@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "deeprag-sdk"
+version = "0.1.0"
+description = "Agent-first RAG SDK for internal document retrieval — progressive disclosure over Elasticsearch + BGE-M3"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+dependencies = [
+    # Elasticsearch 8.x client
+    "elasticsearch>=8.0.0,<9.0.0",
+    # BGE-M3 embedding model
+    "FlagEmbedding>=1.2.0",
+    # LangGraph ReAct workflow
+    "langgraph>=0.1.0",
+    "langchain-core>=0.1.0",
+    # OpenAI-compatible LLM client
+    "openai>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deeprag_sdk*"]
