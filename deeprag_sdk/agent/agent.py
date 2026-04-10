@@ -128,8 +128,14 @@ class Agent:
         # Create a fresh tool executor bound to this reader
         tool_executor = ToolExecutor(reader=self.reader)
 
-        # LangGraph runnable config
+        # LangGraph runnable config.
+        # recursion_limit counts every node visit, not just LLM calls.
+        # Each round visits ~4 nodes (planning→tool_call→check_limits→planning),
+        # so we need at least max_llm_calls * 4 + a safety buffer.
+        recursion_limit = self.max_llm_calls * 4 + 10
+
         config = {
+            "recursion_limit": recursion_limit,
             "configurable": {
                 "client": self.client,
                 "model_name": self.model,
@@ -140,7 +146,7 @@ class Agent:
                 "print_process": self.print_process,
                 "stream": self.stream,
                 "tool_executor": tool_executor,
-            }
+            },
         }
 
         if self.print_process:
