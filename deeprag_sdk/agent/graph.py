@@ -394,4 +394,5 @@ def create_initial_state(session_id: str = "", docs: Optional[Dict] = None) -> A
         "termination": "",
         "chunk_cache": {},
         "search_results_cache": [],
+        "full_doc_cache": {},
     }

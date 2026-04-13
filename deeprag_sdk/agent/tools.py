@@ -1,25 +1,41 @@
 """
 Tools available to the RAG ReAct agent.
 
-Six tools, ordered by information cost (cheapest first):
-  search_docs   -> document-level abstract search; returns content summaries
-  quick_preview -> concurrent first-N-chars preview of multiple documents
-  load_doc      -> chunk structure with 60-char descriptions + token counts
-  preview_doc   -> first 2000 chars of one document
-  read_chunk    -> full content of one chunk (targeted read)
-  get_full_doc  -> complete document text (last resort)
+Seven tools, ordered by information cost (cheapest first):
+  search_docs     -> document-level abstract search; returns content summaries
+  quick_preview   -> concurrent first-N-chars preview of multiple documents
+  load_doc        -> chunk structure with 60-char descriptions + token counts
+  preview_doc     -> first 2000 chars of one document
+  read_chunk      -> full content of one chunk (targeted read)
+  browse_full_doc -> split full document into parts and show a preview of each
+  read_doc_part   -> read one specific part of the full document
+
+The last two tools replace the former get_full_doc tool and prevent LLM
+context overflow by never sending the entire document at once:
+
+  browse_full_doc(file_id)
+      Fetches the complete document once, caches it in Python memory,
+      then returns only a table of contents — each part's index, char range,
+      and first 150 chars.  The LLM picks which part(s) to read.
+
+  read_doc_part(file_id, part_index)
+      Returns only the chosen part (~PART_SIZE chars).  The LLM receives
+      a manageable slice rather than the entire document.
 
 Maps to DeepXiv's tool chain:
-  search_papers   -> search_docs
-  quick_preview   -> quick_preview  (batch, concurrent)
-  load_paper      -> load_doc
+  search_papers     -> search_docs
+  quick_preview     -> quick_preview   (batch, concurrent)
+  load_paper        -> load_doc
   get_paper_preview -> preview_doc
-  read_section    -> read_chunk
-  get_full_paper  -> get_full_doc
+  read_section      -> read_chunk
+  get_full_paper    -> browse_full_doc + read_doc_part
 """
 
 import json
 from typing import Dict, Optional, List, Any
+
+# Default part size for browse_full_doc / read_doc_part (characters)
+PART_SIZE = 4000
 
 
 # ------------------------------------------------------------------
@@ -153,12 +169,15 @@ def get_tools_definition() -> List[Dict]:
         {
             "type": "function",
             "function": {
-                "name": "get_full_doc",
+                "name": "browse_full_doc",
                 "description": (
-                    "Retrieve the complete document text from the full_text record. "
-                    "WARNING: can be very large (tens of thousands of characters). "
-                    "Use only when the answer may span the entire document and "
-                    "read_chunk cannot locate it."
+                    "Fetch the complete document and display a table of contents: "
+                    "the document is split into numbered parts (~4000 chars each) and "
+                    "only the first 150 chars of each part are shown. "
+                    "Use this when read_chunk cannot locate the answer and you need to "
+                    "scan the full document. Then call read_doc_part to read the relevant part. "
+                    "WARNING: never use this as the first tool — always try search_docs and "
+                    "read_chunk first."
                 ),
                 "parameters": {
                     "type": "object",
@@ -169,6 +188,31 @@ def get_tools_definition() -> List[Dict]:
                         },
                     },
                     "required": ["file_id"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_doc_part",
+                "description": (
+                    "Read one specific part of a full document (identified by part_index). "
+                    "Must call browse_full_doc first to load the document and see the part list. "
+                    "Each part is ~4000 chars — manageable for the LLM without context overflow."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_id": {
+                            "type": "string",
+                            "description": "Document file ID",
+                        },
+                        "part_index": {
+                            "type": "integer",
+                            "description": "Zero-based part index shown in browse_full_doc output",
+                        },
+                    },
+                    "required": ["file_id", "part_index"],
                 },
             },
         },
@@ -206,7 +250,6 @@ class ToolExecutor:
         if not results or not results.get("results"):
             return f"No documents found for '{query}'. Try rephrasing the query."
 
-        # Update agent state cache
         search_cache.clear()
         search_cache.extend(results["results"])
 
@@ -217,7 +260,6 @@ class ToolExecutor:
             f"=== Search results for '{query}' ===",
             f"Found {total} documents, showing top {len(hits)}\n",
         ]
-
         for i, hit in enumerate(hits, 1):
             lines.append(f"{i}. [{hit['file_name']}]")
             if hit.get("section_title"):
@@ -247,7 +289,6 @@ class ToolExecutor:
             session_id=session_id,
             max_chars=2000,
         )
-
         if not previews:
             return "No preview content found for the provided file IDs."
 
@@ -258,7 +299,6 @@ class ToolExecutor:
             if p.get("truncated"):
                 lines.append("... [truncated — use load_doc + read_chunk for full content]")
             lines.append("")
-
         return "\n".join(lines)
 
     def load_doc(
@@ -268,7 +308,6 @@ class ToolExecutor:
         state_docs: Dict,
     ) -> str:
         """Load document chunk structure and cache it in agent state."""
-        # Return cached version if already loaded
         if file_id in state_docs:
             return self._format_doc_head(state_docs[file_id], from_cache=True)
 
@@ -276,7 +315,6 @@ class ToolExecutor:
         if not head or not head.get("chunks"):
             return f"Could not load document '{file_id}'. Check that the file_id is correct."
 
-        # Build and cache DocInfo
         chunks_dict = {
             c["chunk_id"]: {
                 "chunk_id":      c["chunk_id"],
@@ -288,11 +326,11 @@ class ToolExecutor:
             for c in head["chunks"]
         }
         state_docs[file_id] = {
-            "file_id":      file_id,
-            "file_name":    head.get("file_name", ""),
-            "file_urls":    head.get("file_urls", ""),
-            "total_tokens": head.get("total_tokens", 0),
-            "chunks":       chunks_dict,
+            "file_id":       file_id,
+            "file_name":     head.get("file_name", ""),
+            "file_urls":     head.get("file_urls", ""),
+            "total_tokens":  head.get("total_tokens", 0),
+            "chunks":        chunks_dict,
             "loaded_chunks": {},
         }
         return self._format_doc_head(state_docs[file_id], from_cache=False)
@@ -317,7 +355,6 @@ class ToolExecutor:
         chunk_cache: Dict,
     ) -> str:
         """Fetch and return the full text of a chunk."""
-        # Return cached content if available
         if chunk_id in chunk_cache:
             return self._format_chunk(chunk_id, chunk_cache[chunk_id], from_cache=True)
 
@@ -326,9 +363,8 @@ class ToolExecutor:
             return f"Could not read chunk '{chunk_id}'. Check that the chunk_id is correct."
 
         content = result["content"]
-        chunk_cache[chunk_id] = content  # cache for reuse
+        chunk_cache[chunk_id] = content
 
-        # Also update loaded_chunks in state_docs if the parent doc is known
         file_id = result.get("file_id", "")
         if file_id and file_id in state_docs:
             state_docs[file_id]["loaded_chunks"][chunk_id] = content
@@ -344,17 +380,97 @@ class ToolExecutor:
         lines.append("\n=== End of chunk ===")
         return "\n".join(lines)
 
-    def get_full_doc(self, file_id: str, session_id: str) -> str:
-        """Retrieve the complete document text."""
-        result = self.reader.raw(file_id=file_id, session_id=session_id)
-        if not result or not result.get("content"):
-            return f"Could not retrieve full document '{file_id}'."
+    def browse_full_doc(
+        self,
+        file_id: str,
+        session_id: str,
+        full_doc_cache: Dict,
+        part_size: int = PART_SIZE,
+    ) -> str:
+        """Fetch full document once, cache it, return a part-by-part table of contents.
+
+        The LLM sees only the first 150 chars of each part and picks which
+        part(s) to read via read_doc_part — no risk of context overflow.
+        """
+        # Fetch and cache the full document (only once per file_id)
+        if file_id not in full_doc_cache:
+            result = self.reader.raw(file_id=file_id, session_id=session_id)
+            if not result or not result.get("content"):
+                return f"Could not retrieve document '{file_id}'."
+            full_doc_cache[file_id] = {
+                "content":   result["content"],
+                "file_name": result.get("file_name", file_id),
+            }
+
+        cached    = full_doc_cache[file_id]
+        content   = cached["content"]
+        file_name = cached["file_name"]
+        total     = len(content)
+        n_parts   = (total + part_size - 1) // part_size
 
         lines = [
-            f"=== Full document: {result.get('file_name', file_id)} ===\n",
-            result["content"],
-            "\n=== End of document ===",
+            f"=== Full document overview: {file_name} ===",
+            f"Total: {total:,} chars | {n_parts} parts (~{part_size} chars each)\n",
+            "Part index | Char range          | Preview (first 150 chars)",
+            "-" * 70,
         ]
+
+        for i in range(n_parts):
+            start   = i * part_size
+            end     = min(start + part_size, total)
+            preview = content[start:start + 150].replace("\n", " ").strip()
+            lines.append(f"Part {i:>3}   | {start:>7,} – {end:>7,} | {preview}")
+
+        lines.append("")
+        lines.append(
+            "Call read_doc_part(file_id, part_index) to read the content of a specific part."
+        )
+        return "\n".join(lines)
+
+    def read_doc_part(
+        self,
+        file_id: str,
+        part_index: int,
+        full_doc_cache: Dict,
+        part_size: int = PART_SIZE,
+    ) -> str:
+        """Return the full text of one document part.
+
+        browse_full_doc must be called first (it populates full_doc_cache).
+        """
+        if file_id not in full_doc_cache:
+            return (
+                f"Document '{file_id}' is not loaded yet. "
+                "Call browse_full_doc(file_id) first to load and inspect the document."
+            )
+
+        cached    = full_doc_cache[file_id]
+        content   = cached["content"]
+        file_name = cached["file_name"]
+        total     = len(content)
+        n_parts   = (total + part_size - 1) // part_size
+
+        if part_index < 0 or part_index >= n_parts:
+            return (
+                f"part_index {part_index} is out of range. "
+                f"Valid range: 0 – {n_parts - 1} (use browse_full_doc to see the part list)."
+            )
+
+        start        = part_index * part_size
+        end          = min(start + part_size, total)
+        part_content = content[start:end]
+
+        lines = [
+            f"=== Part {part_index} / {n_parts - 1}: {file_name} ===",
+            f"Chars {start:,} – {end:,} of {total:,}\n",
+            part_content,
+            f"\n=== End of part {part_index} ===",
+        ]
+        if end < total:
+            lines.append(
+                f"Continues in part {part_index + 1} — "
+                f"call read_doc_part('{file_id}', {part_index + 1}) if needed."
+            )
         return "\n".join(lines)
 
     # ---- Central dispatcher -------------------------------------------------
@@ -398,10 +514,18 @@ class ToolExecutor:
                     chunk_cache=state["chunk_cache"],
                 )
 
-            elif tool_name == "get_full_doc":
-                return self.get_full_doc(
+            elif tool_name == "browse_full_doc":
+                return self.browse_full_doc(
                     file_id=tool_args.get("file_id", ""),
                     session_id=session_id,
+                    full_doc_cache=state["full_doc_cache"],
+                )
+
+            elif tool_name == "read_doc_part":
+                return self.read_doc_part(
+                    file_id=tool_args.get("file_id", ""),
+                    part_index=tool_args.get("part_index", 0),
+                    full_doc_cache=state["full_doc_cache"],
                 )
 
             else:
@@ -424,7 +548,6 @@ class ToolExecutor:
             f"Total chunks: {len(chunks)} | Total chars: {doc.get('total_tokens', 0)}\n",
             "Chunks (chunk_id | page | chars | section | description):",
         ]
-
         for chunk in sorted(chunks.values(), key=lambda c: c.get("page_num", 0)):
             section = f"[{chunk['section_title']}] " if chunk.get("section_title") else ""
             lines.append(
@@ -433,7 +556,6 @@ class ToolExecutor:
                 f" | {chunk['token_count']}c"
                 f" | {section}{chunk['description']}"
             )
-
         lines.append(
             "\nTip: call read_chunk(chunk_id) for any chunk whose description "
             "suggests it contains the answer."

@@ -6,7 +6,7 @@ adapted for internal document retrieval.
 """
 
 import operator
-from typing import TypedDict, List, Dict, Annotated
+from typing import TypedDict, List, Dict, Any, Annotated
 
 
 class ChunkInfo(TypedDict):
@@ -59,3 +59,7 @@ class AgentState(TypedDict):
     # Caches — avoid redundant ES round-trips
     chunk_cache:          Dict[str, str]   # chunk_id -> full content
     search_results_cache: List[Dict]
+
+    # Full-document cache for browse_full_doc / read_doc_part
+    # Keyed by file_id; value holds content + file_name so raw() is called only once.
+    full_doc_cache: Dict[str, Any]         # file_id -> {"content": str, "file_name": str}
