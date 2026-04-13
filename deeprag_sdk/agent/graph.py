@@ -379,9 +379,9 @@ def create_react_graph() -> StateGraph:
     return workflow.compile()
 
 
-def create_initial_state(user_id: str = "", docs: Optional[Dict] = None) -> AgentState:
+def create_initial_state(session_id: str = "", docs: Optional[Dict] = None) -> AgentState:
     return {
-        "user_id": user_id,
+        "session_id": session_id,
         "docs": docs or {},
         "messages": [],
         "question": "",
