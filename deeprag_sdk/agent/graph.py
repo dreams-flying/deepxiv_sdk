@@ -379,7 +379,11 @@ def create_react_graph() -> StateGraph:
     return workflow.compile()
 
 
-def create_initial_state(session_id: str = "", docs: Optional[Dict] = None) -> AgentState:
+def create_initial_state(
+    session_id: str = "",
+    docs: Optional[Dict] = None,
+    file_ids: Optional[List] = None,
+) -> AgentState:
     return {
         "session_id": session_id,
         "docs": docs or {},
@@ -395,4 +399,6 @@ def create_initial_state(session_id: str = "", docs: Optional[Dict] = None) -> A
         "chunk_cache": {},
         "search_results_cache": [],
         "full_doc_cache": {},
+        "allowed_file_ids": file_ids or None,
+        "read_chunk_results": [],
     }

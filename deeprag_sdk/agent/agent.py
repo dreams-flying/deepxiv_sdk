@@ -24,7 +24,7 @@ Usage:
 """
 
 import time
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from openai import OpenAI
 
 from ..reader import Reader
@@ -97,6 +97,7 @@ class Agent:
         question: str,
         session_id: str = "",
         reset_docs: bool = False,
+        file_ids: Optional[List[str]] = None,
     ) -> str:
         """Answer a question using the document retrieval agent.
 
@@ -104,15 +105,58 @@ class Agent:
             question:   Natural language question.
             session_id: Session / user identifier for ES filtering and cache scoping.
             reset_docs: Clear the document cache for this session before querying.
+            file_ids:   Hard-restrict search to these file IDs only (optional).
+                        Useful when the caller knows which documents are in scope.
 
         Returns:
             The agent's final answer as a string.
         """
+        prediction, _ = self._run(
+            question=question,
+            session_id=session_id,
+            reset_docs=reset_docs,
+            file_ids=file_ids,
+        )
+        return prediction
+
+    def query_with_sources(
+        self,
+        question: str,
+        session_id: str = "",
+        reset_docs: bool = False,
+        file_ids: Optional[List[str]] = None,
+    ) -> Tuple[str, List[Dict]]:
+        """Like query(), but also returns the source chunks the agent read.
+
+        Returns:
+            (answer, sources) where sources is a list of dicts:
+              {chunk_id, file_id, file_name, page_num, section_title, content}
+            The list is ordered by read time (first read first).
+        """
+        return self._run(
+            question=question,
+            session_id=session_id,
+            reset_docs=reset_docs,
+            file_ids=file_ids,
+        )
+
+    def _run(
+        self,
+        question: str,
+        session_id: str = "",
+        reset_docs: bool = False,
+        file_ids: Optional[List[str]] = None,
+    ) -> Tuple[str, List[Dict]]:
+        """Internal runner shared by query() and query_with_sources()."""
         if reset_docs:
             self._persistent_docs.pop(session_id, None)
 
         persistent = self._persistent_docs.setdefault(session_id, {})
-        state = create_initial_state(session_id=session_id, docs=dict(persistent))
+        state = create_initial_state(
+            session_id=session_id,
+            docs=dict(persistent),
+            file_ids=file_ids,
+        )
         state["question"] = question
 
         tool_executor = ToolExecutor(reader=self.reader)
@@ -141,6 +185,8 @@ class Agent:
             print(f"\n{'='*60}")
             print(f"[Agent] Question : {question}")
             print(f"[Agent] Session  : {session_id or '(none)'}")
+            if file_ids:
+                print(f"[Agent] FileIDs  : {file_ids}")
             print(f"{'='*60}\n")
 
         final_state = self._graph.invoke(state, config=config)
@@ -150,12 +196,14 @@ class Agent:
 
         prediction  = final_state.get("prediction", "")
         termination = final_state.get("termination", "unknown")
+        sources     = final_state.get("read_chunk_results", [])
 
         if self.print_process:
             print(f"\n[Agent] Termination : {termination}")
             print(f"[Agent] Rounds      : {final_state.get('round', 0)}")
+            print(f"[Agent] Sources     : {len(sources)} chunks read")
 
-        return prediction
+        return prediction, sources
 
     def get_loaded_docs(self, session_id: str = "") -> Dict:
         """Return cached document structures for a session."""

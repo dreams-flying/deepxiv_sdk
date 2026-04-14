@@ -480,12 +480,17 @@ class ToolExecutor:
         session_id = state.get("session_id", "")
         try:
             if tool_name == "search_docs":
+                # allowed_file_ids is a hard restriction set by the caller (e.g. RAGRetrievalTool).
+                # It overrides any file_ids the LLM might have specified, ensuring the agent
+                # cannot escape the knowledge-base scope it was given.
+                allowed = state.get("allowed_file_ids")
+                effective_file_ids = allowed if allowed is not None else tool_args.get("file_ids")
                 return self.search_docs(
                     query=tool_args.get("query", ""),
                     session_id=session_id,
                     search_cache=state["search_results_cache"],
                     size=tool_args.get("size", 10),
-                    file_ids=tool_args.get("file_ids"),
+                    file_ids=effective_file_ids,
                 )
 
             elif tool_name == "quick_preview":
@@ -508,11 +513,35 @@ class ToolExecutor:
                 )
 
             elif tool_name == "read_chunk":
-                return self.read_chunk(
-                    chunk_id=tool_args.get("chunk_id", ""),
+                chunk_id = tool_args.get("chunk_id", "")
+                result_text = self.read_chunk(
+                    chunk_id=chunk_id,
                     state_docs=state["docs"],
                     chunk_cache=state["chunk_cache"],
                 )
+                # Record source metadata so callers (e.g. RAGRetrievalTool) can
+                # return precise segments rather than the synthesised answer string.
+                content = state["chunk_cache"].get(chunk_id, "")
+                if content:
+                    # Find which file owns this chunk (populated by read_chunk above)
+                    file_id, file_name, page_num, section_title = "", "", 0, ""
+                    for fid, doc in state["docs"].items():
+                        if chunk_id in doc.get("chunks", {}):
+                            file_id      = fid
+                            file_name    = doc.get("file_name", "")
+                            chunk_meta   = doc["chunks"][chunk_id]
+                            page_num     = chunk_meta.get("page_num", 0)
+                            section_title = chunk_meta.get("section_title", "")
+                            break
+                    state["read_chunk_results"].append({
+                        "chunk_id":      chunk_id,
+                        "file_id":       file_id,
+                        "file_name":     file_name,
+                        "page_num":      page_num,
+                        "section_title": section_title,
+                        "content":       content,
+                    })
+                return result_text
 
             elif tool_name == "browse_full_doc":
                 return self.browse_full_doc(

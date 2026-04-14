@@ -6,7 +6,7 @@ adapted for internal document retrieval.
 """
 
 import operator
-from typing import TypedDict, List, Dict, Any, Annotated
+from typing import TypedDict, List, Dict, Any, Annotated, Optional
 
 
 class ChunkInfo(TypedDict):
@@ -63,3 +63,11 @@ class AgentState(TypedDict):
     # Full-document cache for browse_full_doc / read_doc_part
     # Keyed by file_id; value holds content + file_name so raw() is called only once.
     full_doc_cache: Dict[str, Any]         # file_id -> {"content": str, "file_name": str}
+
+    # Hard restriction on which file_ids may be searched (set by caller, not by LLM).
+    # None means unrestricted; a non-empty list restricts search to those file_ids.
+    allowed_file_ids: Optional[List[str]]
+
+    # Ordered list of every chunk that was fully read during this session.
+    # Each entry: {chunk_id, file_id, file_name, page_num, section_title, content}
+    read_chunk_results: List[Dict]
